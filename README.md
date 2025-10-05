@@ -1,6 +1,6 @@
 # N8N Deployment - Politechnika Częstochowska
 
-Wdrożenie platformy automatyzacji n8n na Azure Container Instances dla Politechniki Częstochowskiej.
+Wdrożenie platformy automatyzacji n8n na Azure z PostgreSQL dla systemu akceptacji faktur - Politechnika Częstochowska.
 
 ## 🚀 Szybki start
 
@@ -8,16 +8,22 @@ Wdrożenie platformy automatyzacji n8n na Azure Container Instances dla Politech
 - Azure CLI zainstalowane i zalogowane
 - Aktywna subskrypcja Azure
 - Dostęp do bash shell
+- psql client (dla testowania bazy danych)
 
 ### Wdrożenie
 
 ```bash
+# Klonuj repozytorium
+git clone https://github.com/PowerBIIT/pcz-n8n-azure.git
+cd pcz-n8n-azure
+
+# Wdróż infrastrukturę
 cd scripts
 bash deploy.sh
 ```
 
-**Czas wdrożenia:** ~2 minuty
-**Koszt:** ~$20/miesiąc (1 vCPU, 1.5GB RAM)
+**Czas wdrożenia:** ~5 minut
+**Koszt:** ~$35-40/miesiąc (n8n + PostgreSQL + Storage)
 
 ## 📋 Informacje o wdrożeniu
 
@@ -33,32 +39,30 @@ bash deploy.sh
 |-------|-------|-------------|
 | Resource Group | `n8n-poland-rg` | Poland Central |
 | Container Instance | `n8n-pcz` | Poland Central |
+| PostgreSQL Flexible Server | `n8n-postgres-pcz` | Poland Central |
 | Storage Account | `n8nstorage18411` | Poland Central |
-| File Share | `n8ndata` | - |
+| Blob Container | `invoices` | - |
 
-## 💾 Backup i persystencja danych
+## 💾 Persystencja danych
 
-### ⚠️ WAŻNE: Brak automatycznej persystencji
+### ✅ PostgreSQL Flexible Server
 
-n8n działa z SQLite w pamięci kontenera. **Restart kontenera = utrata danych**.
+n8n używa PostgreSQL jako backend database. **Dane przetrwają restart kontenera**.
 
-### Backup workflow (przed restartem)
+- **Host:** n8n-postgres-pcz.postgres.database.azure.com
+- **Database:** flexibleserverdb
+- **Tabele:**
+  - n8n system tables (workflows, credentials, executions)
+  - `faktury` - tabela faktur z workflow
+
+### Backup workflow (opcjonalny)
 
 ```bash
 cd scripts
 bash n8n-backup.sh
 ```
 
-Skrypt:
-- Eksportuje wszystkie workflows i credentials przez API
-- Zapisuje do Azure File Share (`n8ndata/backups/`)
-- Lokalny backup w `/tmp/n8n-backup-YYYYMMDD-HHMMSS/`
-
-### Restore workflow (po restarcie)
-
-1. Deploy nowego kontenera (lub restart istniejącego)
-2. W n8n UI: **Settings → Import from File**
-3. Wybierz plik: `/tmp/n8n-backup-YYYYMMDD-HHMMSS/workflows.json`
+Backup nie jest już wymagany przed restartem, ale zalecany jako dodatkowe zabezpieczenie.
 
 ## 🛠️ Zarządzanie
 
@@ -92,42 +96,71 @@ az container show --resource-group n8n-poland-rg --name n8n-pcz --query 'instanc
 
 ## 💰 Koszty
 
-| Składnik | Koszt/miesiąc |
-|----------|---------------|
-| Container Instance (1 vCPU, 1.5GB) | ~$15 |
-| Storage Account (10GB File Share) | ~$2 |
-| Bandwidth | ~$3 |
-| **TOTAL** | **~$20** |
+| Składnik | SKU | Koszt/miesiąc |
+|----------|-----|---------------|
+| Container Instance | 1 vCPU, 2GB RAM | ~$15 |
+| PostgreSQL Flexible Server | Standard_B1ms | ~$20 |
+| Storage Account | Blob Storage ~10GB | ~$0.50 |
+| Bandwidth | Minimal | ~$1 |
+| **TOTAL** | | **~$35-40** |
 
 ### Optymalizacja kosztów
 
-- **Stop podczas nieużywania:** Container można zatrzymać → $0/dzień
-- **Auto-shutdown:** Rozważ Azure Automation do automatycznego wyłączania nocą/weekendy
-- **Monitoring:** Ustawić alerty Azure Cost Management przy >$25/miesiąc
+- **Stop podczas nieużywania:** Container można zatrzymać (PostgreSQL nadal działa ale ~50% kosztów)
+- **Auto-shutdown:** Azure Automation do wyłączania nocą/weekendy
+- **PostgreSQL:** Burstable tier już jest najtańszy (B1ms)
+- **Monitoring:** Alerty Azure Cost Management przy >$50/miesiąc
 
 ## 🏗️ Architektura
 
 ```
-┌─────────────────────────────────────┐
-│  Azure Container Instance           │
-│  ┌──────────────────────────────┐  │
-│  │  n8n:latest                  │  │
-│  │  - Port: 5678                │  │
-│  │  - CPU: 1 vCPU               │  │
-│  │  - RAM: 1.5GB                │  │
-│  │  - DB: SQLite (in-container) │  │
-│  └──────────────────────────────┘  │
-└─────────────────────────────────────┘
-           │
-           │ (manual backup via API)
-           ↓
-┌─────────────────────────────────────┐
-│  Azure File Share                   │
-│  - n8ndata/backups/                 │
-│  - workflows-YYYYMMDD.json          │
-│  - credentials-YYYYMMDD.json        │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  User                                                     │
+│  1. Wypełnia formularz faktury                           │
+│  2. Otrzymuje email z linkami akceptacji/odrzucenia      │
+└──────────────────────────────────────────────────────────┘
+                        │
+                        ↓
+┌──────────────────────────────────────────────────────────┐
+│  Azure Container Instance - n8n                          │
+│  ┌────────────────────────────────────────────────────┐ │
+│  │  n8n:latest                                        │ │
+│  │  - Port: 5678 (HTTP)                               │ │
+│  │  - CPU: 1 vCPU, RAM: 2GB                          │ │
+│  │  - Form Trigger: /form/faktura-pcz                │ │
+│  │  - Webhook: /webhook/faktura-akceptacja           │ │
+│  └────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────┘
+           │                    │                 │
+           │                    │                 │
+           ↓                    ↓                 ↓
+┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│ PostgreSQL       │  │ Azure Blob       │  │ Gmail SMTP       │
+│ Flexible Server  │  │ Storage          │  │                  │
+│                  │  │                  │  │                  │
+│ - n8n tables     │  │ - Container:     │  │ - From:          │
+│ - faktury table  │  │   invoices       │  │   radek@...      │
+│   • id           │  │ - PDF files      │  │ - To:            │
+│   • numer_fv     │  │                  │  │   właściciel     │
+│   • kontrahent   │  │                  │  │                  │
+│   • kwoty        │  │                  │  │                  │
+│   • status       │  │                  │  │                  │
+└──────────────────┘  └──────────────────┘  └──────────────────┘
 ```
+
+## 📊 Workflow Faktur
+
+Szczegółowy opis workflow znajduje się w: **[docs/INVOICE-WORKFLOW.md](docs/INVOICE-WORKFLOW.md)**
+
+**Proces:**
+1. User → Formularz → Dane faktury + PDF
+2. n8n → Obliczenie VAT i brutto
+3. n8n → Zapis do PostgreSQL (status: oczekuje)
+4. n8n → Upload PDF do Azure Blob
+5. n8n → Email do właściciela budżetu (linki akcept/odrzuć)
+6. Właściciel → Klik link → Webhook
+7. n8n → Update statusu w DB (zaakceptowana/odrzucona)
+8. User → Potwierdzenie w przeglądarce
 
 ## 📚 Dokumentacja
 
@@ -135,31 +168,79 @@ az container show --resource-group n8n-poland-rg --name n8n-pcz --query 'instanc
 
 ```
 pcz-n8n-azure/
-├── README.md                    # Ten plik
+├── README.md                          # Ten plik
 ├── docs/
-│   └── credentials.md          # Dane dostępowe (NIE commituj!)
+│   ├── DEPLOYMENT.md                  # Szczegółowa dokumentacja wdrożenia
+│   ├── INVOICE-WORKFLOW.md            # Dokumentacja workflow faktur
+│   └── SETUP-CREDENTIALS.md           # Konfiguracja credentials krok po kroku
 ├── scripts/
-│   ├── deploy.sh               # Wdrożenie n8n
-│   └── n8n-backup.sh           # Backup workflows
-└── backups/                    # Lokalne backupy (auto-generated)
+│   ├── deploy.sh                      # Wdrożenie n8n + PostgreSQL
+│   ├── n8n-backup.sh                  # Backup workflows (opcjonalny)
+│   └── create-invoice-table.sql       # Schemat tabeli faktur
+├── workflows/
+│   ├── invoice-approval-workflow.json # Workflow akceptacji faktur
+│   └── test-workflow-basic.json       # Testowy workflow
+├── .postgres-password                 # Hasło PostgreSQL (gitignored)
+├── .n8n-api-key                       # n8n API key (gitignored)
+└── backups/                           # Lokalne backupy (auto-generated)
 ```
 
-### Pliki konfiguracyjne
+### Dokumentacja
 
-- **scripts/deploy.sh** - Główny skrypt wdrożeniowy
-- **scripts/n8n-backup.sh** - Automatyczny backup przez API
-- **docs/credentials.md** - Wszystkie dane dostępowe i komendy
+| Plik | Opis |
+|------|------|
+| [docs/INVOICE-WORKFLOW.md](docs/INVOICE-WORKFLOW.md) | Kompletna dokumentacja workflow faktur |
+| [docs/SETUP-CREDENTIALS.md](docs/SETUP-CREDENTIALS.md) | Konfiguracja credentials w n8n |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Deployment i troubleshooting |
+
+## 🔧 Konfiguracja po wdrożeniu
+
+### 1. Setup credentials w n8n
+
+Szczegółowe instrukcje: **[docs/SETUP-CREDENTIALS.md](docs/SETUP-CREDENTIALS.md)**
+
+Potrzebne credentials:
+- **PostgreSQL PCZ** - połączenie z bazą danych
+- **Azure Storage PCZ** - przechowywanie PDF
+- **Gmail PCZ** - wysyłanie powiadomień email
+
+### 2. Import workflow
+
+```bash
+# Przez UI (zalecane dla pierwszego razu):
+# 1. Zaloguj się: http://n8n-pcz.polandcentral.azurecontainer.io:5678
+# 2. Workflows → Import from File
+# 3. Wybierz: workflows/invoice-approval-workflow.json
+
+# LUB przez API:
+# 1. Wygeneruj API key w n8n (Settings → API)
+# 2. Zapisz do .n8n-api-key
+# 3. Uruchom:
+bash scripts/create-workflow.sh workflows/invoice-approval-workflow.json
+```
+
+### 3. Test workflow
+
+1. Otwórz formularz: http://n8n-pcz.polandcentral.azurecontainer.io:5678/form/faktura-pcz
+2. Wypełnij wszystkie pola testowymi danymi
+3. Załącz testowy PDF
+4. Sprawdź email
+5. Kliknij link akceptacji/odrzucenia
+6. Zweryfikuj w bazie:
+```sql
+PGPASSWORD='...' psql -h n8n-postgres-pcz.postgres.database.azure.com \
+  -U n8nadmin -d flexibleserverdb \
+  -c "SELECT * FROM faktury ORDER BY created_at DESC LIMIT 5;"
+```
 
 ## ❓ FAQ
 
-### Dlaczego nie Azure File Share do persystencji?
+### Dlaczego PostgreSQL zamiast SQLite?
 
-Azure Container Instances ma problemy z montowaniem File Share w niektórych konfiguracjach. Próby montowania kończyły się błędem "Failed to mount Azure File Volume".
+**SQLite** - dane w kontenerze, restart = utrata danych
+**PostgreSQL Flexible Server** - persystencja danych, profesjonalne rozwiązanie
 
-**Alternatywy:**
-- **VM z Dockerem** (~$68/mies) - pełna kontrola, File Share działa
-- **Azure App Service** (~$55/mies) - managed, persystencja wbudowana
-- **Obecne rozwiązanie** (~$20/mies) - manual backup, 5x taniej
+Koszt +$20/mies, ale bezpieczeństwo danych bezcenne.
 
 ### Jak migrować na inną subskrypcję (np. uczelnianą)?
 

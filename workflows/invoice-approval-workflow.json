@@ -1,0 +1,444 @@
+{
+  "name": "Faktury - Akceptacja",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "faktura-pcz",
+        "formTitle": "System Faktur - Politechnika Częstochowska",
+        "formDescription": "Wypełnij formularz i załącz PDF faktury",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Numer faktury",
+              "fieldType": "text",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Nazwa kontrahenta",
+              "fieldType": "text",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Data wystawienia",
+              "fieldType": "date",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Kwota netto (PLN)",
+              "fieldType": "number",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "VAT (%)",
+              "fieldType": "number",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Opis",
+              "fieldType": "textarea",
+              "requiredField": false
+            },
+            {
+              "fieldLabel": "Email właściciela budżetu",
+              "fieldType": "email",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "PDF faktury",
+              "fieldType": "file",
+              "requiredField": true,
+              "acceptFileTypes": ".pdf"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "form-trigger-1",
+      "name": "Formularz Faktury",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.1,
+      "position": [
+        250,
+        300
+      ],
+      "webhookId": "pcz-invoice-form"
+    },
+    {
+      "parameters": {
+        "jsCode": "const netto = $input.first().json['Kwota netto (PLN)'];\nconst vat = $input.first().json['VAT (%)'];\n\nconst kwotaVat = netto * (vat / 100);\nconst brutto = netto + kwotaVat;\n\nreturn {\n  json: {\n    ...($input.first().json),\n    'Kwota VAT': kwotaVat.toFixed(2),\n    'Kwota brutto': brutto.toFixed(2),\n    'Data zgłoszenia': new Date().toISOString()\n  }\n};"
+      },
+      "id": "function-1",
+      "name": "Oblicz VAT i Brutto",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "list",
+          "value": "faktury"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "numer_faktury": "={{ $json['Numer faktury'] }}",
+            "nazwa_kontrahenta": "={{ $json['Nazwa kontrahenta'] }}",
+            "data_wystawienia": "={{ $json['Data wystawienia'] }}",
+            "kwota_netto": "={{ $json['Kwota netto (PLN)'] }}",
+            "vat_procent": "={{ $json['VAT (%)'] }}",
+            "kwota_vat": "={{ $json['Kwota VAT'] }}",
+            "kwota_brutto": "={{ $json['Kwota brutto'] }}",
+            "opis": "={{ $json['Opis'] }}",
+            "email_wlasciciela": "={{ $json['Email właściciela budżetu'] }}",
+            "status": "oczekuje",
+            "data_zgloszenia": "={{ $json['Data zgłoszenia'] }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "postgres-1",
+      "name": "Zapisz w PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        650,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL PCZ"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "containerName": "invoices",
+        "blobName": "={{ $json['Numer faktury'].replace(/\\//g, '-') }}.pdf",
+        "binaryData": true,
+        "binaryPropertyName": "PDF faktury",
+        "options": {}
+      },
+      "id": "azure-blob-1",
+      "name": "Zapisz PDF w Azure Blob",
+      "type": "n8n-nodes-base.microsoftAzure",
+      "typeVersion": 1.0,
+      "position": [
+        850,
+        300
+      ],
+      "credentials": {
+        "microsoftAzure": {
+          "id": "2",
+          "name": "Azure Storage PCZ"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "radekbroniszewski@gmail.com",
+        "toEmail": "={{ $json['Email właściciela budżetu'] }}",
+        "subject": "Nowa faktura do akceptacji: {{ $json['Numer faktury'] }}",
+        "emailFormat": "html",
+        "message": "<h2>Nowa faktura wymaga Twojej akceptacji</h2>\n<p><strong>Numer:</strong> {{ $json['Numer faktury'] }}</p>\n<p><strong>Kontrahent:</strong> {{ $json['Nazwa kontrahenta'] }}</p>\n<p><strong>Kwota netto:</strong> {{ $json['Kwota netto (PLN)'] }} PLN</p>\n<p><strong>VAT:</strong> {{ $json['VAT (%)'] }}%</p>\n<p><strong>Kwota brutto:</strong> {{ $json['Kwota brutto'] }} PLN</p>\n<p><strong>Opis:</strong> {{ $json['Opis'] }}</p>\n<hr>\n<p>Aby zaakceptować lub odrzucić fakturę, kliknij odpowiedni link poniżej:</p>\n<p><a href=\"{{ $('Webhook Akceptacja').item.json.webhookUrl }}?action=accept&id={{ $('Zapisz w PostgreSQL').item.json.id }}\">✅ Akceptuj</a></p>\n<p><a href=\"{{ $('Webhook Akceptacja').item.json.webhookUrl }}?action=reject&id={{ $('Zapisz w PostgreSQL').item.json.id }}\">❌ Odrzuć</a></p>",
+        "options": {}
+      },
+      "id": "gmail-1",
+      "name": "Wyślij email do właściciela",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1050,
+        300
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "3",
+          "name": "Gmail PCZ"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "path": "faktura-akceptacja",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-1",
+      "name": "Webhook Akceptacja",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        250,
+        500
+      ],
+      "webhookId": "pcz-invoice-approval"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "condition-1",
+              "leftValue": "={{ $json.query.action }}",
+              "rightValue": "accept",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "if-1",
+      "name": "Czy akceptacja?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        450,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "list",
+          "value": "faktury"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "zaakceptowana",
+            "data_akceptacji": "={{ new Date().toISOString() }}"
+          }
+        },
+        "where": {
+          "values": [
+            {
+              "column": "id",
+              "condition": "equal",
+              "value": "={{ $json.query.id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "postgres-2",
+      "name": "Zaakceptuj w DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        650,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL PCZ"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "list",
+          "value": "faktury"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "odrzucona",
+            "data_odrzucenia": "={{ new Date().toISOString() }}"
+          }
+        },
+        "where": {
+          "values": [
+            {
+              "column": "id",
+              "condition": "equal",
+              "value": "={{ $json.query.id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "postgres-3",
+      "name": "Odrzuć w DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        650,
+        600
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL PCZ"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "=✅ Faktura została zaakceptowana. Dziękujemy!",
+        "options": {}
+      },
+      "id": "respond-1",
+      "name": "Odpowiedź - Akceptacja",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        850,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "=❌ Faktura została odrzucona.",
+        "options": {}
+      },
+      "id": "respond-2",
+      "name": "Odpowiedź - Odrzucenie",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        850,
+        600
+      ]
+    }
+  ],
+  "connections": {
+    "Formularz Faktury": {
+      "main": [
+        [
+          {
+            "node": "Oblicz VAT i Brutto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Oblicz VAT i Brutto": {
+      "main": [
+        [
+          {
+            "node": "Zapisz w PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zapisz w PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "Zapisz PDF w Azure Blob",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zapisz PDF w Azure Blob": {
+      "main": [
+        [
+          {
+            "node": "Wyślij email do właściciela",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Akceptacja": {
+      "main": [
+        [
+          {
+            "node": "Czy akceptacja?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Czy akceptacja?": {
+      "main": [
+        [
+          {
+            "node": "Zaakceptuj w DB",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Odrzuć w DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zaakceptuj w DB": {
+      "main": [
+        [
+          {
+            "node": "Odpowiedź - Akceptacja",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Odrzuć w DB": {
+      "main": [
+        [
+          {
+            "node": "Odpowiedź - Odrzucenie",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
