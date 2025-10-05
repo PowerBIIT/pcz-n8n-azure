@@ -4,6 +4,7 @@ docs/credentials.md
 .env.*
 *.key
 *.pem
+.n8n-api-key
 
 # Backups
 backups/
