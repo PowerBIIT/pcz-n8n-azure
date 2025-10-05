@@ -1,0 +1,33 @@
+# Credentials and secrets
+docs/credentials.md
+.env
+.env.*
+*.key
+*.pem
+
+# Backups
+backups/
+/tmp/n8n-backup-*
+
+# Azure
+.azure/
+*.publishsettings
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+temp/
